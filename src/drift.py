@@ -4,7 +4,9 @@ import json
 import numpy as np
 import torch
 
+from PIL import Image
 from torch.utils.data import DataLoader
+from datasets import Dataset
 from transformers import (
     AutoImageProcessor,
     AutoModelForImageClassification,
@@ -38,21 +40,73 @@ def get_device():
 
 
 # ============================================================
-# CREATE IMAGE EMBEDDINGS
+# LOAD DRIFTED DATASET
 # ============================================================
 
-def create_embeddings(dataset, model, processor, device):
+def load_drifted_dataset(
+    directory="data/drifted_images",
+):
+    """
+    Load the simulated drifted images.
+    """
+
+    image_files = sorted(
+        [
+            file
+            for file in os.listdir(directory)
+            if file.endswith(".jpg")
+        ]
+    )
+
+    images = []
+
+    for file in image_files:
+
+        image_path = os.path.join(
+            directory,
+            file,
+        )
+
+        image = Image.open(
+            image_path
+        ).convert("RGB")
+
+        images.append(image)
+
+    dataset = Dataset.from_dict(
+        {
+            "image": images,
+        }
+    )
+
+    return dataset
+
+
+# ============================================================
+# CREATE EMBEDDINGS
+# ============================================================
+
+def create_embeddings(
+    dataset,
+    model,
+    processor,
+    device,
+):
 
     embeddings = []
+
+    def collate_images(batch):
+
+        return [
+            item["image"].convert("RGB")
+            for item in batch
+        ]
 
     loader = DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        collate_fn=lambda batch: [
-            item["image"].convert("RGB")
-            for item in batch
-        ],
+        collate_fn=collate_images,
     )
 
     model.eval()
@@ -71,26 +125,25 @@ def create_embeddings(dataset, model, processor, device):
                 for key, value in inputs.items()
             }
 
-            # ------------------------------------------------
-            # Get ViT hidden representation
-            # ------------------------------------------------
+            outputs = model.vit(
+                **inputs
+            )
 
-            outputs = model.vit(**inputs)
-
-            # CLS token embedding
             batch_embeddings = (
                 outputs.last_hidden_state[:, 0, :]
             )
 
             embeddings.extend(
-                batch_embeddings.cpu().numpy()
+                batch_embeddings
+                .cpu()
+                .numpy()
             )
 
     return np.array(embeddings)
 
 
 # ============================================================
-# CALCULATE DRIFT SCORE
+# CALCULATE DRIFT
 # ============================================================
 
 def calculate_drift_score(
@@ -108,29 +161,31 @@ def calculate_drift_score(
         axis=0,
     )
 
-    distance = np.linalg.norm(
+    drift_score = np.linalg.norm(
         reference_mean - current_mean
     )
 
-    return float(distance)
+    return float(drift_score)
 
 
 # ============================================================
-# SAVE DRIFT RESULT
+# SAVE RESULT
 # ============================================================
 
 def save_drift_result(
     drift_score,
     threshold,
     drift_detected,
+    dataset_type,
 ):
 
     os.makedirs(
-        os.path.dirname(DRIFT_RESULT),
+        "artifacts",
         exist_ok=True,
     )
 
     result = {
+        "dataset_type": dataset_type,
         "drift_score": drift_score,
         "threshold": threshold,
         "drift_detected": drift_detected,
@@ -149,37 +204,25 @@ def save_drift_result(
 
 
 # ============================================================
-# MAIN DRIFT DETECTION
+# NORMAL DRIFT CHECK
 # ============================================================
 
-def detect_drift():
-
-    print("=" * 60)
-    print("FOOD-101 IMAGE DRIFT DETECTION")
-    print("=" * 60)
-
-    # --------------------------------------------------------
-    # Device
-    # --------------------------------------------------------
-
-    device = get_device()
+def run_normal_drift_check(
+    model,
+    processor,
+    device,
+):
 
     print(
-        f"\nDevice: {device}"
-    )
-
-    # --------------------------------------------------------
-    # Load dataset
-    # --------------------------------------------------------
-
-    print(
-        "\nLoading Food-101 dataset..."
+        "\nLoading normal validation data..."
     )
 
     dataset = load_food101()
 
     train_dataset, validation_dataset = (
-        create_train_validation_split(dataset)
+        create_train_validation_split(
+            dataset
+        )
     )
 
     print(
@@ -191,36 +234,6 @@ def detect_drift():
         f"Current images: "
         f"{len(validation_dataset)}"
     )
-
-    # --------------------------------------------------------
-    # Load processor
-    # --------------------------------------------------------
-
-    print(
-        "\nLoading image processor..."
-    )
-
-    processor = AutoImageProcessor.from_pretrained(
-        MODEL_DIR
-    )
-
-    # --------------------------------------------------------
-    # Load trained model
-    # --------------------------------------------------------
-
-    print(
-        "\nLoading trained model..."
-    )
-
-    model = AutoModelForImageClassification.from_pretrained(
-        MODEL_DIR
-    )
-
-    model.to(device)
-
-    # --------------------------------------------------------
-    # Reference embeddings
-    # --------------------------------------------------------
 
     print(
         "\nCreating reference embeddings..."
@@ -238,12 +251,8 @@ def detect_drift():
         reference_embeddings.shape,
     )
 
-    # --------------------------------------------------------
-    # Current embeddings
-    # --------------------------------------------------------
-
     print(
-        "\nCreating current embeddings..."
+        "\nCreating normal current embeddings..."
     )
 
     current_embeddings = create_embeddings(
@@ -258,19 +267,179 @@ def detect_drift():
         current_embeddings.shape,
     )
 
-    # --------------------------------------------------------
-    # Save embeddings
-    # --------------------------------------------------------
-
-    os.makedirs(
-        "artifacts",
-        exist_ok=True,
-    )
-
-    np.save(
-        DRIFT_REFERENCE,
+    return (
         reference_embeddings,
+        current_embeddings,
     )
+
+
+# ============================================================
+# DRIFTED DATA CHECK
+# ============================================================
+
+def run_drifted_check(
+    model,
+    processor,
+    device,
+):
+
+    print(
+        "\nLoading drifted images..."
+    )
+
+    drifted_dataset = (
+        load_drifted_dataset()
+    )
+
+    print(
+        f"Drifted images: "
+        f"{len(drifted_dataset)}"
+    )
+
+    # --------------------------------------------------------
+    # Load existing reference embeddings
+    # --------------------------------------------------------
+
+    if not os.path.exists(
+        DRIFT_REFERENCE
+    ):
+
+        raise FileNotFoundError(
+            "Reference embeddings not found. "
+            "Run the normal drift check first."
+        )
+
+    reference_embeddings = np.load(
+        DRIFT_REFERENCE
+    )
+
+    print(
+        "\nReference embedding shape:",
+        reference_embeddings.shape,
+    )
+
+    # --------------------------------------------------------
+    # Create drifted embeddings
+    # --------------------------------------------------------
+
+    print(
+        "\nCreating drifted embeddings..."
+    )
+
+    current_embeddings = create_embeddings(
+        drifted_dataset,
+        model,
+        processor,
+        device,
+    )
+
+    print(
+        "Drifted embedding shape:",
+        current_embeddings.shape,
+    )
+
+    return (
+        reference_embeddings,
+        current_embeddings,
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def detect_drift(
+    use_drifted_data=False,
+):
+
+    print("=" * 60)
+    print("FOOD-101 IMAGE DRIFT DETECTION")
+    print("=" * 60)
+
+    # --------------------------------------------------------
+    # Device
+    # --------------------------------------------------------
+
+    device = get_device()
+
+    print(
+        f"\nDevice: {device}"
+    )
+
+    # --------------------------------------------------------
+    # Load model
+    # --------------------------------------------------------
+
+    print(
+        "\nLoading image processor..."
+    )
+
+    processor = (
+        AutoImageProcessor.from_pretrained(
+            MODEL_DIR
+        )
+    )
+
+    print(
+        "\nLoading trained model..."
+    )
+
+    model = (
+        AutoModelForImageClassification
+        .from_pretrained(
+            MODEL_DIR
+        )
+    )
+
+    model.to(device)
+
+    # --------------------------------------------------------
+    # Select dataset
+    # --------------------------------------------------------
+
+    if use_drifted_data:
+
+        print(
+            "\nMODE: SIMULATED DRIFT"
+        )
+
+        (
+            reference_embeddings,
+            current_embeddings,
+        ) = run_drifted_check(
+            model,
+            processor,
+            device,
+        )
+
+        dataset_type = "simulated_drift"
+
+    else:
+
+        print(
+            "\nMODE: NORMAL DATA"
+        )
+
+        (
+            reference_embeddings,
+            current_embeddings,
+        ) = run_normal_drift_check(
+            model,
+            processor,
+            device,
+        )
+
+        dataset_type = "normal"
+
+        # Save reference embeddings
+        np.save(
+            DRIFT_REFERENCE,
+            reference_embeddings,
+        )
+
+    # --------------------------------------------------------
+    # Save current embeddings
+    # --------------------------------------------------------
 
     np.save(
         DRIFT_CURRENT,
@@ -278,7 +447,7 @@ def detect_drift():
     )
 
     # --------------------------------------------------------
-    # Calculate drift
+    # Calculate score
     # --------------------------------------------------------
 
     print(
@@ -302,28 +471,42 @@ def detect_drift():
         drift_score,
         DRIFT_THRESHOLD,
         drift_detected,
+        dataset_type,
     )
 
     # --------------------------------------------------------
     # Results
     # --------------------------------------------------------
 
-    print("\n" + "=" * 60)
-    print("DRIFT RESULTS")
-    print("=" * 60)
+    print(
+        "\n" + "=" * 60
+    )
 
     print(
-        f"\nDrift Score : "
+        "DRIFT RESULTS"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    print(
+        f"\nDataset Type : "
+        f"{dataset_type}"
+    )
+
+    print(
+        f"Drift Score  : "
         f"{drift_score:.4f}"
     )
 
     print(
-        f"Threshold   : "
+        f"Threshold    : "
         f"{DRIFT_THRESHOLD:.4f}"
     )
 
     print(
-        f"Drift       : "
+        f"Drift        : "
         f"{drift_detected}"
     )
 
@@ -355,4 +538,16 @@ def detect_drift():
 
 if __name__ == "__main__":
 
-    detect_drift()
+    import sys
+
+    if "--drifted" in sys.argv:
+
+        detect_drift(
+            use_drifted_data=True
+        )
+
+    else:
+
+        detect_drift(
+            use_drifted_data=False
+        )
