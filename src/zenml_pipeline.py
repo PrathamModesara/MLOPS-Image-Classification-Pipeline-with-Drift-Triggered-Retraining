@@ -54,7 +54,7 @@ def evaluation_step():
 
 
 @pipeline
-def food101_pipeline():
+def food101_pipeline(enable_cache=False):
     data_step()
     training_step()
     evaluation_step()
