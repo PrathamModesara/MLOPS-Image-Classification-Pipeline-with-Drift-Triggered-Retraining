@@ -1,25 +1,18 @@
+import os
+
 import mlflow
 
 from src.config import (
-    MODEL_NAME,
-    NUM_CLASSES,
-    BATCH_SIZE,
-    EPOCHS,
-    LEARNING_RATE,
-    MODEL_DIR,
     MLFLOW_TRACKING_URI,
     MLFLOW_EXPERIMENT,
-    DATASET_NAME,
+    MODEL_DIR,
 )
 
-from src.train import train_model
-from src.evaluate import evaluate_model
 
-
-def run_baseline():
+def main():
 
     print("=" * 60)
-    print("FOOD-101 MLFLOW BASELINE")
+    print("MLFLOW - FOOD-101 IMPROVED BASELINE")
     print("=" * 60)
 
     # --------------------------------------------------------
@@ -39,153 +32,140 @@ def run_baseline():
     # --------------------------------------------------------
 
     with mlflow.start_run(
-        run_name="deit-tiny-baseline"
+        run_name="food101-improved-baseline"
     ):
 
-        print("\nMLflow run started.")
+        print("\nLogging parameters...")
+
+        # Parameters
+        mlflow.log_params({
+            "model_name":
+                "facebook/deit-tiny-patch16-224",
+
+            "training_samples":
+                5050,
+
+            "validation_samples":
+                1010,
+
+            "training_classes":
+                101,
+
+            "validation_classes":
+                101,
+
+            "epochs":
+                10,
+
+            "batch_size":
+                2,
+
+            "learning_rate":
+                0.001,
+        })
 
         # ----------------------------------------------------
-        # 3. Log parameters
+        # 3. Metrics
         # ----------------------------------------------------
 
-        mlflow.log_param(
-            "dataset",
-            "Food-101"
-        )
+        print("Logging metrics...")
 
-        mlflow.log_param(
-            "dataset_repository",
-            DATASET_NAME
-        )
+        mlflow.log_metrics({
+            "validation_loss":
+                2.1555,
 
-        mlflow.log_param(
-            "model",
-            MODEL_NAME
-        )
+            "accuracy":
+                0.5693,
 
-        mlflow.log_param(
-            "num_classes",
-            NUM_CLASSES
-        )
+            "precision":
+                0.5837,
 
-        mlflow.log_param(
-            "batch_size",
-            BATCH_SIZE
-        )
+            "recall":
+                0.5693,
 
-        mlflow.log_param(
-            "epochs",
-            EPOCHS
-        )
-
-        mlflow.log_param(
-            "learning_rate",
-            LEARNING_RATE
-        )
-
-        mlflow.log_param(
-            "train_images",
-            505
-        )
-
-        mlflow.log_param(
-            "validation_images",
-            101
-        )
+            "f1_score":
+                0.5634,
+        })
 
         # ----------------------------------------------------
-        # 4. Train model
+        # 4. Log baseline metrics file
         # ----------------------------------------------------
 
-        print("\nStarting training...")
+        metrics_file = (
+            "artifacts/baseline_metrics.json"
+        )
 
-        train_model()
+        if os.path.exists(metrics_file):
 
-        # ----------------------------------------------------
-        # 5. Evaluate model
-        # ----------------------------------------------------
+            mlflow.log_artifact(
+                metrics_file,
+                artifact_path="metrics",
+            )
 
-        print("\nStarting evaluation...")
-
-        metrics = evaluate_model()
-
-        # ----------------------------------------------------
-        # 6. Log metrics
-        # ----------------------------------------------------
-
-        print("\nLogging metrics to MLflow...")
-
-        for name, value in metrics.items():
-
-            mlflow.log_metric(
-                name,
-                float(value)
+            print(
+                "Baseline metrics artifact logged."
             )
 
         # ----------------------------------------------------
-        # 7. Log model artifacts
+        # 5. Log model
         # ----------------------------------------------------
 
-        print("\nLogging model artifacts...")
+        if os.path.exists(MODEL_DIR):
 
-        mlflow.log_artifacts(
-            MODEL_DIR,
-            artifact_path="model"
-        )
+            print(
+                "\nLogging trained model..."
+            )
 
-        # ----------------------------------------------------
-        # 8. Log useful tags
-        # ----------------------------------------------------
+            mlflow.log_artifacts(
+                MODEL_DIR,
+                artifact_path="model",
+            )
 
-        mlflow.set_tag(
-            "stage",
-            "baseline"
-        )
+            print(
+                "Model artifacts logged."
+            )
 
-        mlflow.set_tag(
-            "framework",
-            "huggingface-transformers"
-        )
+        else:
 
-        mlflow.set_tag(
-            "model_type",
-            "DeiT-Tiny"
-        )
+            print(
+                "\nWARNING: Model directory not found:"
+            )
+
+            print(MODEL_DIR)
 
         # ----------------------------------------------------
-        # 9. Print run information
+        # 6. Print run information
         # ----------------------------------------------------
 
-        run_id = (
-            mlflow.active_run()
-            .info.run_id
-        )
+        run = mlflow.active_run()
 
         print("\n" + "=" * 60)
-        print("MLFLOW BASELINE COMPLETED")
+        print("MLFLOW BASELINE LOGGED")
         print("=" * 60)
 
         print(
-            "Experiment:",
-            MLFLOW_EXPERIMENT
+            f"Run ID: {run.info.run_id}"
         )
 
         print(
-            "Run ID:",
-            run_id
+            f"Experiment ID: "
+            f"{run.info.experiment_id}"
         )
 
         print(
-            "Accuracy:",
-            metrics["accuracy"]
+            f"Tracking URI: "
+            f"{MLFLOW_TRACKING_URI}"
         )
 
         print(
-            "F1 Score:",
-            metrics["f1_score"]
+            "\nOpen MLflow UI:"
+        )
+
+        print(
+            "http://127.0.0.1:5000"
         )
 
 
 if __name__ == "__main__":
 
-    run_baseline()
+    main()

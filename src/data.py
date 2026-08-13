@@ -1,44 +1,51 @@
 from datasets import load_dataset
 
-from src.config import DATASET_NAME
+from src.config import (
+    DATASET_NAME,
+)
 
 
-TRAIN_IMAGES_PER_CLASS = 5
-VALIDATION_IMAGES_PER_CLASS = 1
+# ============================================================
+# SETTINGS
+# ============================================================
 
-NUM_CLASSES = 101
+TRAIN_IMAGES_PER_CLASS = 50
+VALIDATION_IMAGES_PER_CLASS = 10
 
 
-def get_balanced_split(
+# ============================================================
+# CREATE BALANCED SUBSET
+# ============================================================
+
+def create_balanced_subset(
     dataset,
-    images_per_class
+    images_per_class,
 ):
     """
-    Select a fixed number of images
-    from every Food-101 class.
-    """
+    Create a balanced subset without decoding all images.
 
-    selected_indices = []
+    Example:
+        101 classes x 50 images = 5050 images
+    """
 
     labels = dataset["label"]
 
-    for class_id in range(NUM_CLASSES):
+    class_indices = {}
 
-        class_indices = [
-            i
-            for i, label in enumerate(labels)
-            if label == class_id
-        ]
+    for index, label in enumerate(labels):
 
-        if len(class_indices) < images_per_class:
+        if label not in class_indices:
+            class_indices[label] = []
 
-            raise ValueError(
-                f"Class {class_id} has only "
-                f"{len(class_indices)} images."
-            )
+        if len(class_indices[label]) < images_per_class:
+            class_indices[label].append(index)
+
+    selected_indices = []
+
+    for label in sorted(class_indices.keys()):
 
         selected_indices.extend(
-            class_indices[:images_per_class]
+            class_indices[label]
         )
 
     return dataset.select(
@@ -46,40 +53,80 @@ def get_balanced_split(
     )
 
 
+# ============================================================
+# LOAD FOOD-101
+# ============================================================
+
 def load_food101():
 
     print("\nLoading Food-101 dataset...")
 
-    print(
-        "Loading full training metadata..."
-    )
+    # --------------------------------------------------------
+    # Training metadata
+    # --------------------------------------------------------
 
-    train_dataset = load_dataset(
+    print("Loading full training metadata...")
+
+    full_train = load_dataset(
         DATASET_NAME,
-        split="train"
+        split="train",
     )
 
-    print(
-        "Loading full validation metadata..."
-    )
+    # --------------------------------------------------------
+    # Validation metadata
+    # --------------------------------------------------------
 
-    validation_dataset = load_dataset(
+    print("Loading full validation metadata...")
+
+    full_validation = load_dataset(
         DATASET_NAME,
-        split="validation"
+        split="validation",
+    )
+
+    # --------------------------------------------------------
+    # Balanced training subset
+    # --------------------------------------------------------
+
+    print(
+        "\nCreating balanced training subset..."
+    )
+
+    train_dataset = create_balanced_subset(
+        full_train,
+        TRAIN_IMAGES_PER_CLASS,
+    )
+
+    # --------------------------------------------------------
+    # Balanced validation subset
+    # --------------------------------------------------------
+
+    print(
+        "Creating balanced validation subset..."
+    )
+
+    validation_dataset = create_balanced_subset(
+        full_validation,
+        VALIDATION_IMAGES_PER_CLASS,
     )
 
     print(
-        "\nCreating balanced development split..."
+        f"\nTraining samples: "
+        f"{len(train_dataset)}"
     )
 
-    train_dataset = get_balanced_split(
-        train_dataset,
-        TRAIN_IMAGES_PER_CLASS
+    print(
+        f"Validation samples: "
+        f"{len(validation_dataset)}"
     )
 
-    validation_dataset = get_balanced_split(
-        validation_dataset,
-        VALIDATION_IMAGES_PER_CLASS
+    print(
+        f"Training classes: "
+        f"{len(set(train_dataset['label']))}"
+    )
+
+    print(
+        f"Validation classes: "
+        f"{len(set(validation_dataset['label']))}"
     )
 
     return {
@@ -88,7 +135,13 @@ def load_food101():
     }
 
 
-def create_train_validation_split(dataset):
+# ============================================================
+# TRAIN / VALIDATION SPLIT
+# ============================================================
+
+def create_train_validation_split(
+    dataset,
+):
 
     train_dataset = dataset["train"]
 
@@ -100,12 +153,18 @@ def create_train_validation_split(dataset):
     )
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 if __name__ == "__main__":
 
     dataset = load_food101()
 
     train_dataset, validation_dataset = (
-        create_train_validation_split(dataset)
+        create_train_validation_split(
+            dataset
+        )
     )
 
     print("\n" + "=" * 60)
@@ -114,50 +173,40 @@ if __name__ == "__main__":
 
     print(
         "Training samples:",
-        len(train_dataset)
+        len(train_dataset),
     )
 
     print(
         "Validation samples:",
-        len(validation_dataset)
+        len(validation_dataset),
     )
 
     print(
         "Training columns:",
-        train_dataset.column_names
+        train_dataset.column_names,
     )
 
     print(
         "Validation columns:",
-        validation_dataset.column_names
-    )
-
-    train_labels = sorted(
-        set(train_dataset["label"])
-    )
-
-    validation_labels = sorted(
-        set(validation_dataset["label"])
+        validation_dataset.column_names,
     )
 
     print(
         "Training classes:",
-        len(train_labels)
+        len(
+            set(
+                train_dataset["label"]
+            )
+        ),
     )
 
     print(
         "Validation classes:",
-        len(validation_labels)
-    )
-
-    print(
-        "Training labels:",
-        train_labels
-    )
-
-    print(
-        "Validation labels:",
-        validation_labels
+        len(
+            set(
+                validation_dataset["label"]
+            )
+        ),
     )
 
     print("=" * 60)

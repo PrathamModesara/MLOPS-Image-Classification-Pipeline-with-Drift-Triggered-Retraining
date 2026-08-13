@@ -7,24 +7,26 @@ import os
 
 DATASET_NAME = "ethz/food101"
 
-# Development dataset
-# We start with 500 images to test the pipeline.
 DATASET_SPLIT = os.getenv(
     "FOOD101_SPLIT",
-    "train[:500]"
+    "train[:5000]"
 )
+
+VALIDATION_SPLIT = os.getenv(
+    "FOOD101_VALIDATION_SPLIT",
+    "validation[:1000]"
+)
+
+NUM_CLASSES = 101
 
 
 # ============================================================
 # MODEL
 # ============================================================
 
-MODEL_NAME = os.getenv(
-    "MODEL_NAME",
+MODEL_NAME = (
     "facebook/deit-tiny-patch16-224"
 )
-
-NUM_CLASSES = 101
 
 IMAGE_SIZE = 224
 
@@ -33,16 +35,30 @@ IMAGE_SIZE = 224
 # TRAINING
 # ============================================================
 
+# CPU-friendly batch size
 BATCH_SIZE = int(
-    os.getenv("BATCH_SIZE", "8")
+    os.getenv("BATCH_SIZE", "2")
 )
 
+# Final training epochs
 EPOCHS = int(
-    os.getenv("EPOCHS", "1")
+    os.getenv("EPOCHS", "10")
 )
 
+# Best learning rate found by Optuna
 LEARNING_RATE = float(
-    os.getenv("LEARNING_RATE", "0.0001")
+    os.getenv(
+        "LEARNING_RATE",
+        "0.000088567"
+    )
+)
+
+# Best augmentation strength found by Optuna
+AUGMENTATION_STRENGTH = float(
+    os.getenv(
+        "AUGMENTATION_STRENGTH",
+        "0.069617"
+    )
 )
 
 
@@ -68,6 +84,18 @@ DRIFT_RESULT = (
 
 
 # ============================================================
+# DRIFT
+# ============================================================
+
+DRIFT_THRESHOLD = float(
+    os.getenv(
+        "DRIFT_THRESHOLD",
+        "4.0"
+    )
+)
+
+
+# ============================================================
 # MLFLOW
 # ============================================================
 
@@ -78,13 +106,4 @@ MLFLOW_TRACKING_URI = os.getenv(
 
 MLFLOW_EXPERIMENT = (
     "Food101-Drift-Retraining"
-)
-
-
-# ============================================================
-# DRIFT
-# ============================================================
-
-DRIFT_THRESHOLD = float(
-    os.getenv("DRIFT_THRESHOLD", "0.30")
 )
