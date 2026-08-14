@@ -1,0 +1,72 @@
+name: Food101 Drift Retraining
+
+on:
+  workflow_dispatch:
+
+  repository_dispatch:
+    types:
+      - drift-alert
+
+jobs:
+
+  drift-retraining:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Display drift alert
+        run: |
+          echo "============================================"
+          echo "FOOD-101 DRIFT ALERT"
+          echo "============================================"
+          echo "GitHub Actions workflow triggered."
+          echo "Event: ${{ github.event.action }}"
+          echo "============================================"
+
+      - name: Run drift detection
+        run: |
+          python -m src.drift --drifted
+
+      - name: Check drift result
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+
+          with open("artifacts/drift_result.json") as f:
+              result = json.load(f)
+
+          print("Dataset Type :", result["dataset_type"])
+          print("Drift Score  :", result["drift_score"])
+          print("Threshold    :", result["threshold"])
+          print("Drift        :", result["drift_detected"])
+
+          if not result["drift_detected"]:
+              print("No drift detected.")
+              print("Retraining is not required.")
+              sys.exit(0)
+
+          print("DRIFT DETECTED!")
+          print("Retraining is required.")
+          PY
+
+      - name: Drift detected
+        run: |
+          echo "============================================"
+          echo "DRIFT DETECTED"
+          echo "Retraining pipeline should be triggered."
+          echo "============================================"
