@@ -28,17 +28,40 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Display drift alert
+      - name: Verify model files
         run: |
-          echo "============================================"
-          echo "FOOD-101 DRIFT ALERT"
-          echo "============================================"
-          echo "GitHub Actions workflow triggered."
-          echo "Event: ${{ github.event.action }}"
-          echo "============================================"
+          echo "Checking trained model..."
 
-      - name: Run drift detection
+          ls -lh models/food101_model
+
+          test -f models/food101_model/model.safetensors
+          test -f models/food101_model/config.json
+          test -f models/food101_model/preprocessor_config.json
+
+          echo "Model files available."
+
+      - name: Verify drift images
         run: |
+          echo "Checking drift images..."
+
+          COUNT=$(find data/drifted_images -type f -name "*.jpg" | wc -l)
+
+          echo "Drift images: $COUNT"
+
+          test "$COUNT" -eq 101
+
+          echo "Drift dataset available."
+
+      - name: Create drift reference embeddings
+        run: |
+          echo "Creating reference embeddings from normal Food-101 data..."
+
+          python -m src.drift
+
+      - name: Run simulated drift detection
+        run: |
+          echo "Running simulated drift detection..."
+
           python -m src.drift --drifted
 
       - name: Check drift result
@@ -50,13 +73,17 @@ jobs:
           with open("artifacts/drift_result.json") as f:
               result = json.load(f)
 
+          print("============================================")
+          print("FOOD-101 DRIFT RESULT")
+          print("============================================")
           print("Dataset Type :", result["dataset_type"])
           print("Drift Score  :", result["drift_score"])
           print("Threshold    :", result["threshold"])
           print("Drift        :", result["drift_detected"])
+          print("============================================")
 
           if not result["drift_detected"]:
-              print("No drift detected.")
+              print("NO DRIFT DETECTED")
               print("Retraining is not required.")
               sys.exit(0)
 
@@ -68,5 +95,7 @@ jobs:
         run: |
           echo "============================================"
           echo "DRIFT DETECTED"
-          echo "Retraining pipeline should be triggered."
+          echo "============================================"
+          echo "The Food-101 input distribution has changed."
+          echo "Retraining should be triggered."
           echo "============================================"
