@@ -15,22 +15,43 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # CHECKOUT REPOSITORY
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # SETUP PYTHON
+      # ============================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+
+      # ============================================================
+      # INSTALL DEPENDENCIES
+      # ============================================================
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+
+      # ============================================================
+      # VERIFY MODEL FILES
+      # ============================================================
+
       - name: Verify model files
         run: |
-          echo "Checking trained model..."
+          echo "============================================"
+          echo "CHECKING TRAINED MODEL"
+          echo "============================================"
 
           ls -lh models/food101_model
 
@@ -39,10 +60,18 @@ jobs:
           test -f models/food101_model/preprocessor_config.json
 
           echo "Model files available."
+          echo "============================================"
+
+
+      # ============================================================
+      # VERIFY DRIFT IMAGES
+      # ============================================================
 
       - name: Verify drift images
         run: |
-          echo "Checking drift images..."
+          echo "============================================"
+          echo "CHECKING DRIFT DATASET"
+          echo "============================================"
 
           COUNT=$(find data/drifted_images -type f -name "*.jpg" | wc -l)
 
@@ -51,24 +80,51 @@ jobs:
           test "$COUNT" -eq 101
 
           echo "Drift dataset available."
+          echo "============================================"
+
+
+      # ============================================================
+      # CREATE REFERENCE EMBEDDINGS
+      # ============================================================
 
       - name: Create drift reference embeddings
         run: |
-          echo "Creating reference embeddings from normal Food-101 data..."
+          echo "============================================"
+          echo "CREATING DRIFT REFERENCE EMBEDDINGS"
+          echo "============================================"
 
           python -m src.drift
 
+          echo "Reference embeddings created."
+          echo "============================================"
+
+
+      # ============================================================
+      # RUN SIMULATED DRIFT DETECTION
+      # ============================================================
+
       - name: Run simulated drift detection
         run: |
-          echo "Running simulated drift detection..."
+          echo "============================================"
+          echo "RUNNING SIMULATED DRIFT DETECTION"
+          echo "============================================"
 
           python -m src.drift --drifted
 
+          echo "Drift detection completed."
+          echo "============================================"
+
+
+      # ============================================================
+      # CHECK DRIFT RESULT
+      # ============================================================
+
       - name: Check drift result
+        id: drift_check
         run: |
           python - <<'PY'
           import json
-          import sys
+          import os
 
           with open("artifacts/drift_result.json") as f:
               result = json.load(f)
@@ -76,26 +132,100 @@ jobs:
           print("============================================")
           print("FOOD-101 DRIFT RESULT")
           print("============================================")
+
           print("Dataset Type :", result["dataset_type"])
           print("Drift Score  :", result["drift_score"])
           print("Threshold    :", result["threshold"])
           print("Drift        :", result["drift_detected"])
+
           print("============================================")
 
-          if not result["drift_detected"]:
+          drift_detected = str(
+              result["drift_detected"]
+          ).lower()
+
+          # Pass drift result to the next GitHub Actions step.
+          with open(
+              os.environ["GITHUB_OUTPUT"],
+              "a"
+          ) as output:
+
+              output.write(
+                  f"drift_detected={drift_detected}\n"
+              )
+
+          if result["drift_detected"]:
+
+              print("DRIFT DETECTED!")
+              print("Retraining is required.")
+
+          else:
+
               print("NO DRIFT DETECTED")
               print("Retraining is not required.")
-              sys.exit(0)
 
-          print("DRIFT DETECTED!")
-          print("Retraining is required.")
           PY
 
+
+      # ============================================================
+      # DISPLAY DRIFT ALERT
+      # ============================================================
+
       - name: Drift detected
+        if: steps.drift_check.outputs.drift_detected == 'true'
         run: |
           echo "============================================"
           echo "DRIFT DETECTED"
           echo "============================================"
           echo "The Food-101 input distribution has changed."
-          echo "Retraining should be triggered."
+          echo "Starting model retraining..."
+          echo "============================================"
+
+
+      # ============================================================
+      # TRIGGER MODEL RETRAINING
+      # ============================================================
+
+      - name: Trigger retraining
+        if: steps.drift_check.outputs.drift_detected == 'true'
+        run: |
+          echo "============================================"
+          echo "STARTING RETRAINING PIPELINE"
+          echo "============================================"
+
+          python -m src.retrain_trigger
+
+          echo "============================================"
+          echo "RETRAINING COMMAND FINISHED"
+          echo "============================================"
+
+
+      # ============================================================
+      # NO DRIFT MESSAGE
+      # ============================================================
+
+      - name: No drift - skip retraining
+        if: steps.drift_check.outputs.drift_detected != 'true'
+        run: |
+          echo "============================================"
+          echo "NO DRIFT DETECTED"
+          echo "============================================"
+          echo "Retraining will be skipped."
+          echo "The existing model remains unchanged."
+          echo "============================================"
+
+
+      # ============================================================
+      # RETRAINING COMPLETED
+      # ============================================================
+
+      - name: Retraining completed
+        if: steps.drift_check.outputs.drift_detected == 'true'
+        run: |
+          echo "============================================"
+          echo "RETRAINING PIPELINE COMPLETED"
+          echo "============================================"
+          echo "Drift detection triggered model retraining."
+          echo "ZenML retraining pipeline was executed."
+          echo "MLflow logging was executed."
           echo "============================================"
