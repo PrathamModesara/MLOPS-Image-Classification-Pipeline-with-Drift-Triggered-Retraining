@@ -16,7 +16,7 @@ jobs:
     steps:
 
       # ============================================================
-      # CHECKOUT REPOSITORY
+      # CHECKOUT
       # ============================================================
 
       - name: Checkout repository
@@ -24,7 +24,7 @@ jobs:
 
 
       # ============================================================
-      # SETUP PYTHON
+      # PYTHON
       # ============================================================
 
       - name: Setup Python
@@ -44,13 +44,29 @@ jobs:
 
 
       # ============================================================
-      # VERIFY MODEL FILES
+      # DISPLAY WORKFLOW INFORMATION
+      # ============================================================
+
+      - name: Display workflow information
+        run: |
+          echo "============================================"
+          echo "FOOD-101 MLOPS PIPELINE"
+          echo "============================================"
+          echo "Workflow : ${{ github.workflow }}"
+          echo "Event    : ${{ github.event_name }}"
+          echo "Branch   : ${{ github.ref }}"
+          echo "Commit   : ${{ github.sha }}"
+          echo "============================================"
+
+
+      # ============================================================
+      # VERIFY MODEL
       # ============================================================
 
       - name: Verify model files
         run: |
           echo "============================================"
-          echo "CHECKING TRAINED MODEL"
+          echo "VERIFYING TRAINED MODEL"
           echo "============================================"
 
           ls -lh models/food101_model
@@ -60,17 +76,16 @@ jobs:
           test -f models/food101_model/preprocessor_config.json
 
           echo "Model files available."
-          echo "============================================"
 
 
       # ============================================================
-      # VERIFY DRIFT IMAGES
+      # VERIFY DRIFT DATA
       # ============================================================
 
       - name: Verify drift images
         run: |
           echo "============================================"
-          echo "CHECKING DRIFT DATASET"
+          echo "VERIFYING DRIFT DATASET"
           echo "============================================"
 
           COUNT=$(find data/drifted_images -type f -name "*.jpg" | wc -l)
@@ -80,7 +95,6 @@ jobs:
           test "$COUNT" -eq 101
 
           echo "Drift dataset available."
-          echo "============================================"
 
 
       # ============================================================
@@ -90,29 +104,27 @@ jobs:
       - name: Create drift reference embeddings
         run: |
           echo "============================================"
-          echo "CREATING DRIFT REFERENCE EMBEDDINGS"
+          echo "CREATING REFERENCE EMBEDDINGS"
           echo "============================================"
 
           python -m src.drift
 
           echo "Reference embeddings created."
-          echo "============================================"
 
 
       # ============================================================
-      # RUN SIMULATED DRIFT DETECTION
+      # RUN DRIFT DETECTION
       # ============================================================
 
       - name: Run simulated drift detection
         run: |
           echo "============================================"
-          echo "RUNNING SIMULATED DRIFT DETECTION"
+          echo "RUNNING DRIFT DETECTION"
           echo "============================================"
 
           python -m src.drift --drifted
 
           echo "Drift detection completed."
-          echo "============================================"
 
 
       # ============================================================
@@ -129,41 +141,39 @@ jobs:
           with open("artifacts/drift_result.json") as f:
               result = json.load(f)
 
+          dataset_type = result["dataset_type"]
+          drift_score = float(result["drift_score"])
+          threshold = float(result["threshold"])
+          drift_detected = bool(result["drift_detected"])
+
           print("============================================")
           print("FOOD-101 DRIFT RESULT")
           print("============================================")
-
-          print("Dataset Type :", result["dataset_type"])
-          print("Drift Score  :", result["drift_score"])
-          print("Threshold    :", result["threshold"])
-          print("Drift        :", result["drift_detected"])
-
+          print("Dataset Type :", dataset_type)
+          print("Drift Score  :", drift_score)
+          print("Threshold    :", threshold)
+          print("Drift        :", drift_detected)
           print("============================================")
 
-          drift_detected = str(
-              result["drift_detected"]
-          ).lower()
-
-          # Pass drift result to the next GitHub Actions step.
-          with open(
-              os.environ["GITHUB_OUTPUT"],
-              "a"
-          ) as output:
-
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(
-                  f"drift_detected={drift_detected}\n"
+                  f"drift_detected={str(drift_detected).lower()}\n"
               )
 
-          if result["drift_detected"]:
+              output.write(
+                  f"drift_score={drift_score}\n"
+              )
 
+              output.write(
+                  f"drift_threshold={threshold}\n"
+              )
+
+          if drift_detected:
               print("DRIFT DETECTED!")
               print("Retraining is required.")
-
           else:
-
-              print("NO DRIFT DETECTED")
+              print("NO DRIFT DETECTED.")
               print("Retraining is not required.")
-
           PY
 
 
@@ -177,7 +187,9 @@ jobs:
           echo "============================================"
           echo "DRIFT DETECTED"
           echo "============================================"
-          echo "The Food-101 input distribution has changed."
+          echo "Dataset type : simulated_drift"
+          echo "Drift score  : ${{ steps.drift_check.outputs.drift_score }}"
+          echo "Threshold    : ${{ steps.drift_check.outputs.drift_threshold }}"
           echo "Starting model retraining..."
           echo "============================================"
 
@@ -201,18 +213,21 @@ jobs:
 
 
       # ============================================================
-      # NO DRIFT MESSAGE
+      # VERIFY RETRAINING OUTPUT
       # ============================================================
 
-      - name: No drift - skip retraining
-        if: steps.drift_check.outputs.drift_detected != 'true'
+      - name: Verify retrained model
+        if: steps.drift_check.outputs.drift_detected == 'true'
         run: |
           echo "============================================"
-          echo "NO DRIFT DETECTED"
+          echo "VERIFYING RETRAINED MODEL"
           echo "============================================"
-          echo "Retraining will be skipped."
-          echo "The existing model remains unchanged."
-          echo "============================================"
+
+          test -f models/food101_model/model.safetensors
+          test -f models/food101_model/config.json
+          test -f models/food101_model/preprocessor_config.json
+
+          echo "Retrained model files are available."
 
 
       # ============================================================
@@ -228,4 +243,36 @@ jobs:
           echo "Drift detection triggered model retraining."
           echo "ZenML retraining pipeline was executed."
           echo "MLflow logging was executed."
+          echo "Retrained model was generated."
+          echo "============================================"
+
+
+      # ============================================================
+      # NO DRIFT
+      # ============================================================
+
+      - name: No drift - skip retraining
+        if: steps.drift_check.outputs.drift_detected != 'true'
+        run: |
+          echo "============================================"
+          echo "NO DRIFT DETECTED"
+          echo "============================================"
+          echo "Retraining will be skipped."
+          echo "The existing model remains unchanged."
+          echo "============================================"
+
+
+      # ============================================================
+      # FINAL PIPELINE STATUS
+      # ============================================================
+
+      - name: Pipeline summary
+        if: always()
+        run: |
+          echo "============================================"
+          echo "FOOD-101 MLOPS PIPELINE SUMMARY"
+          echo "============================================"
+          echo "Drift detected : ${{ steps.drift_check.outputs.drift_detected }}"
+          echo "Drift score    : ${{ steps.drift_check.outputs.drift_score }}"
+          echo "Threshold      : ${{ steps.drift_check.outputs.drift_threshold }}"
           echo "============================================"
