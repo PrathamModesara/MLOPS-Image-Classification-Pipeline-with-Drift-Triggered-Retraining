@@ -28,3 +28,4 @@ logs/
 .ipynb_checkpoints/
 .DS_Store
 Thumbs.db
+actions-runner/
