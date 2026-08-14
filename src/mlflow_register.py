@@ -200,6 +200,7 @@ def register_model():
             mlflow.transformers.log_model(
                 transformers_model=
                     transformers_components,
+			artifact_path="food101_model",
 
                 name="model",
 

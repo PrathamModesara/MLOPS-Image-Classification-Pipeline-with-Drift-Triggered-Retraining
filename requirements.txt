@@ -6,7 +6,7 @@ transformers
 timm
 pillow
 scikit-learn
-mlflow
+mlflow==2.16.2
 optuna
 zenml==0.96.2
 sqlalchemy-utils

@@ -105,5 +105,5 @@ MLFLOW_TRACKING_URI = os.getenv(
 )
 
 MLFLOW_EXPERIMENT = (
-    "Food101-Drift-Retraining"
+    "Food101-Drift-Retraining-v2"
 )
