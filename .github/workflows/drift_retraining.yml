@@ -7,6 +7,7 @@ on:
     types:
       - drift-alert
 
+
 jobs:
 
   drift-retraining:
@@ -50,6 +51,12 @@ jobs:
           python -c "import mlflow; print('MLflow:', mlflow.__version__)"
           python -c "import zenml; print('ZenML:', zenml.__version__)"
 
+          echo "============================================"
+          echo "CHECKING EPOCH CONFIGURATION"
+          echo "============================================"
+
+          python -c "from src.config import EPOCHS; print('Configured epochs:', EPOCHS)"
+
           echo "Environment ready."
 
 
@@ -62,17 +69,19 @@ jobs:
           echo "============================================"
           echo "FOOD-101 MLOPS PIPELINE"
           echo "============================================"
+
           echo "Workflow : ${{ github.workflow }}"
           echo "Event    : ${{ github.event_name }}"
           echo "Branch   : ${{ github.ref }}"
           echo "Commit   : ${{ github.sha }}"
           echo "Runner   : $RUNNER_NAME"
           echo "OS       : $RUNNER_OS"
+
           echo "============================================"
 
 
       # ============================================================
-      # VERIFY MLflow
+      # VERIFY MLFLOW
       # ============================================================
 
       - name: Verify MLflow server
@@ -132,22 +141,42 @@ jobs:
 
 
       # ============================================================
-      # CREATE REFERENCE EMBEDDINGS
+      # VERIFY EXISTING REFERENCE EMBEDDINGS
       # ============================================================
 
-      - name: Create drift reference embeddings
+      - name: Verify drift reference embeddings
         run: |
           echo "============================================"
-          echo "CREATING REFERENCE EMBEDDINGS"
+          echo "VERIFYING REFERENCE EMBEDDINGS"
           echo "============================================"
 
           cd ~/food101_drift_mlops
 
-          source .venv/bin/activate
+          test -f artifacts/reference_embeddings.npy
 
-          python -m src.drift
+          echo "Reference embeddings found."
 
-          echo "Reference embeddings created."
+          ls -lh artifacts/reference_embeddings.npy
+
+          echo "Reference embeddings will be reused."
+
+          python - <<'PY'
+          import numpy as np
+
+          path = "artifacts/reference_embeddings.npy"
+
+          embeddings = np.load(path)
+
+          print("Reference embedding shape:", embeddings.shape)
+          print("Reference embedding dtype:", embeddings.dtype)
+
+          if embeddings.size == 0:
+              raise RuntimeError(
+                  "Reference embeddings file is empty."
+              )
+
+          print("Reference embeddings are valid.")
+          PY
 
 
       # ============================================================
@@ -163,6 +192,8 @@ jobs:
           cd ~/food101_drift_mlops
 
           source .venv/bin/activate
+
+          echo "Using existing reference embeddings."
 
           python -m src.drift --drifted
 
@@ -196,10 +227,12 @@ jobs:
           print("============================================")
           print("FOOD-101 DRIFT RESULT")
           print("============================================")
+
           print("Dataset Type :", dataset_type)
           print("Drift Score  :", drift_score)
           print("Threshold    :", threshold)
           print("Drift        :", drift_detected)
+
           print("============================================")
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
@@ -263,6 +296,11 @@ jobs:
           echo "STARTING RETRAINING PIPELINE"
           echo "============================================"
 
+          echo "Retraining epochs:"
+          python -c "from src.config import EPOCHS; print(EPOCHS)"
+
+          echo "============================================"
+
           python -m src.retrain_trigger
 
           echo "============================================"
@@ -289,6 +327,86 @@ jobs:
           test -f models/food101_model/preprocessor_config.json
 
           echo "Retrained model files are available."
+
+          ls -lh models/food101_model/
+
+
+      # ============================================================
+      # VERIFY MLFLOW RUN
+      # ============================================================
+
+      - name: Verify MLflow retraining run
+        if: steps.drift_check.outputs.drift_detected == 'true'
+        run: |
+
+          cd ~/food101_drift_mlops
+
+          source .venv/bin/activate
+
+          echo "============================================"
+          echo "VERIFYING MLFLOW RETRAINING"
+          echo "============================================"
+
+          python - <<'PY'
+          import mlflow
+
+          from src.config import MLFLOW_TRACKING_URI
+
+          mlflow.set_tracking_uri(
+              MLFLOW_TRACKING_URI
+          )
+
+          client = mlflow.MlflowClient()
+
+          experiment = client.get_experiment_by_name(
+              "food101-drift-retraining"
+          )
+
+          if experiment is None:
+
+              print(
+                  "MLflow experiment not found."
+              )
+
+          else:
+
+              runs = client.search_runs(
+                  experiment_ids=[experiment.experiment_id],
+                  order_by=["attributes.start_time DESC"],
+                  max_results=1,
+              )
+
+              if runs:
+
+                  run = runs[0]
+
+                  print(
+                      "Latest MLflow run:",
+                      run.info.run_id
+                  )
+
+                  print(
+                      "Run status:",
+                      run.info.status
+                  )
+
+                  print(
+                      "Epochs:",
+                      run.data.params.get("epochs")
+                  )
+
+                  print(
+                      "Drift score:",
+                      run.data.params.get("drift_score")
+                  )
+
+              else:
+
+                  print(
+                      "No MLflow runs found."
+                  )
+
+          PY
 
 
       # ============================================================
