@@ -4,17 +4,16 @@ import time
 import torch
 from flask import Flask, jsonify, request
 from PIL import Image
-from transformers import (
-    AutoImageProcessor,
-    AutoModelForImageClassification,
-)
-
 from prometheus_client import (
     Counter,
     Gauge,
     Histogram,
     generate_latest,
     CONTENT_TYPE_LATEST,
+)
+from transformers import (
+    AutoImageProcessor,
+    AutoModelForImageClassification,
 )
 
 
@@ -30,9 +29,11 @@ MODEL_DIR = os.path.join(
 
 app = Flask(__name__)
 
-DEVICE = torch.device(
-    "cuda" if torch.cuda.is_available() else "cpu"
-)
+# Use CPU because Render Free does not provide GPU.
+DEVICE = torch.device("cpu")
+
+# Reduce CPU thread usage and memory overhead.
+torch.set_num_threads(1)
 
 
 # ============================================================
@@ -59,7 +60,7 @@ prediction_confidence = Gauge(
     "Confidence of the most recent Food-101 prediction",
 )
 
-prediction_class = Gauge(
+prediction_class_id = Gauge(
     "food101_prediction_class_id",
     "Class ID of the most recent Food-101 prediction",
 )
@@ -84,7 +85,7 @@ print("Device:", DEVICE)
 print("\nLoading image processor...")
 
 processor = AutoImageProcessor.from_pretrained(
-    MODEL_DIR
+    MODEL_DIR,
 )
 
 print("Image processor loaded.")
@@ -92,9 +93,9 @@ print("Image processor loaded.")
 print("\nLoading trained Food-101 model...")
 
 model = AutoModelForImageClassification.from_pretrained(
-    MODEL_DIR
+    MODEL_DIR,
     low_cpu_mem_usage=True,
-    use_safetensors=True
+    use_safetensors=True,
 )
 
 model.to(DEVICE)
@@ -146,7 +147,7 @@ def model_info():
 def metrics():
 
     return generate_latest(), 200, {
-        "Content-Type": CONTENT_TYPE_LATEST
+        "Content-Type": CONTENT_TYPE_LATEST,
     }
 
 
@@ -157,17 +158,13 @@ def metrics():
 @app.route("/predict", methods=["POST"])
 def predict():
 
-    prediction_requests.inc()
-
     start_time = time.time()
+
+    prediction_requests.inc()
 
     if "image" not in request.files:
 
         prediction_errors.inc()
-
-        prediction_latency.observe(
-            time.time() - start_time
-        )
 
         return jsonify(
             {
@@ -219,7 +216,7 @@ def predict():
             ].item()
 
         # ----------------------------------------------------
-        # Get model label
+        # Get model label if available
         # ----------------------------------------------------
 
         label = model.config.id2label.get(
@@ -237,7 +234,7 @@ def predict():
             float(confidence)
         )
 
-        prediction_class.set(
+        prediction_class_id.set(
             float(predicted_class)
         )
 
