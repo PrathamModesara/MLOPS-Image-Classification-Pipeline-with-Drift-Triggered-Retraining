@@ -1,7 +1,7 @@
 datasets
 huggingface-hub
-torch
-torchvision
+torch==2.13.0+cpu
+torchvision==0.14.0+cpu
 transformers
 timm
 pillow
@@ -25,3 +25,4 @@ python-dotenv
 pyyaml
 requests
 accelerate
+--extra-index-url https://download.pytorch.org/whl/cpu
