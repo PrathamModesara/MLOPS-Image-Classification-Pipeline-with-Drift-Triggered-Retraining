@@ -4,6 +4,7 @@ import time
 import torch
 from flask import Flask, jsonify, request
 from PIL import Image
+
 from prometheus_client import (
     Counter,
     Gauge,
@@ -11,6 +12,7 @@ from prometheus_client import (
     generate_latest,
     CONTENT_TYPE_LATEST,
 )
+
 from transformers import (
     AutoImageProcessor,
     AutoModelForImageClassification,
@@ -21,19 +23,39 @@ from transformers import (
 # CONFIGURATION
 # ============================================================
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 MODEL_DIR = os.path.join(
-    os.path.dirname(__file__),
+    BASE_DIR,
     "models",
     "food101_model",
 )
 
-app = Flask(__name__)
-
-# Use CPU because Render Free does not provide GPU.
 DEVICE = torch.device("cpu")
 
-# Reduce CPU thread usage and memory overhead.
+# Reduce CPU thread usage on Render Free.
 torch.set_num_threads(1)
+
+
+# ============================================================
+# FLASK APPLICATION
+# ============================================================
+
+app = Flask(__name__)
+
+
+# ============================================================
+# GLOBAL MODEL VARIABLES
+# ============================================================
+
+# IMPORTANT:
+# The model is NOT loaded when app.py is imported.
+#
+# This allows Gunicorn to start quickly and Render to detect
+# the PORT before the large Food-101 model is loaded.
+
+processor = None
+model = None
 
 
 # ============================================================
@@ -72,37 +94,90 @@ prediction_latency = Histogram(
 
 
 # ============================================================
-# LOAD MODEL
+# MODEL LOADING FUNCTION
 # ============================================================
 
-print("=" * 60)
-print("FOOD-101 INFERENCE API")
-print("=" * 60)
+def load_model():
+    """
+    Load the Food-101 image processor and trained model.
 
-print("Model directory:", MODEL_DIR)
-print("Device:", DEVICE)
+    The model is loaded only when the first prediction request
+    arrives. This prevents Render's port scanner from timing
+    out while the model is being loaded.
+    """
 
-print("\nLoading image processor...")
+    global processor
+    global model
 
-processor = AutoImageProcessor.from_pretrained(
-    MODEL_DIR,
-)
+    # If already loaded, do nothing.
+    if model is not None and processor is not None:
+        return
 
-print("Image processor loaded.")
+    print("=" * 60)
+    print("LOADING FOOD-101 MODEL")
+    print("=" * 60)
 
-print("\nLoading trained Food-101 model...")
+    print("Model directory:", MODEL_DIR)
+    print("Device:", DEVICE)
 
-model = AutoModelForImageClassification.from_pretrained(
-    MODEL_DIR,
-    low_cpu_mem_usage=True,
-    use_safetensors=True,
-)
+    # --------------------------------------------------------
+    # Load image processor
+    # --------------------------------------------------------
 
-model.to(DEVICE)
-model.eval()
+    print("Loading image processor...")
 
-print("Trained Food-101 model loaded.")
-print("Number of classes:", model.config.num_labels)
+    processor = AutoImageProcessor.from_pretrained(
+        MODEL_DIR
+    )
+
+    print("Image processor loaded.")
+
+    # --------------------------------------------------------
+    # Load trained model
+    # --------------------------------------------------------
+
+    print("Loading trained Food-101 model...")
+
+    model = AutoModelForImageClassification.from_pretrained(
+        MODEL_DIR,
+        low_cpu_mem_usage=True,
+        use_safetensors=True,
+    )
+
+    # Move model to CPU.
+    model.to(DEVICE)
+
+    # Evaluation mode.
+    model.eval()
+
+    print("Trained Food-101 model loaded.")
+    print(
+        "Number of classes:",
+        model.config.num_labels,
+    )
+
+    print("=" * 60)
+
+
+# ============================================================
+# ROOT ENDPOINT
+# ============================================================
+
+@app.route("/", methods=["GET"])
+def home():
+
+    return jsonify(
+        {
+            "message": "Food-101 Image Classification API",
+            "status": "running",
+            "endpoints": {
+                "health": "/health",
+                "model_info": "/model-info",
+                "prediction": "POST /predict",
+                "metrics": "/metrics",
+            },
+        }
+    )
 
 
 # ============================================================
@@ -116,8 +191,8 @@ def health():
         {
             "status": "ok",
             "service": "Food-101 Inference API",
-            "model_loaded": True,
-            "num_classes": model.config.num_labels,
+            "model_loaded": model is not None,
+            "device": str(DEVICE),
         }
     )
 
@@ -129,11 +204,20 @@ def health():
 @app.route("/model-info", methods=["GET"])
 def model_info():
 
+    if model is not None:
+
+        num_classes = model.config.num_labels
+
+    else:
+
+        num_classes = 101
+
     return jsonify(
         {
             "model": "Food-101 trained DeiT-Tiny",
-            "num_classes": model.config.num_labels,
+            "num_classes": num_classes,
             "device": str(DEVICE),
+            "model_loaded": model is not None,
             "model_directory": "models/food101_model",
         }
     )
@@ -152,7 +236,7 @@ def metrics():
 
 
 # ============================================================
-# PREDICTION
+# PREDICTION ENDPOINT
 # ============================================================
 
 @app.route("/predict", methods=["POST"])
@@ -162,9 +246,17 @@ def predict():
 
     prediction_requests.inc()
 
+    # --------------------------------------------------------
+    # Check uploaded image
+    # --------------------------------------------------------
+
     if "image" not in request.files:
 
         prediction_errors.inc()
+
+        prediction_latency.observe(
+            time.time() - start_time
+        )
 
         return jsonify(
             {
@@ -178,11 +270,25 @@ def predict():
 
     try:
 
+        # ----------------------------------------------------
+        # Load model only when prediction is requested
+        # ----------------------------------------------------
+
+        load_model()
+
+        # ----------------------------------------------------
+        # Read image
+        # ----------------------------------------------------
+
         image_file = request.files["image"]
 
         image = Image.open(
             image_file
         ).convert("RGB")
+
+        # ----------------------------------------------------
+        # Preprocess image
+        # ----------------------------------------------------
 
         inputs = processor(
             images=image,
@@ -193,6 +299,10 @@ def predict():
             key: value.to(DEVICE)
             for key, value in inputs.items()
         }
+
+        # ----------------------------------------------------
+        # Model inference
+        # ----------------------------------------------------
 
         with torch.no_grad():
 
@@ -216,12 +326,12 @@ def predict():
             ].item()
 
         # ----------------------------------------------------
-        # Get model label if available
+        # Get class label
         # ----------------------------------------------------
 
         label = model.config.id2label.get(
             predicted_class,
-            f"class_{predicted_class}",
+            f"LABEL_{predicted_class}",
         )
 
         # ----------------------------------------------------
@@ -242,17 +352,21 @@ def predict():
             time.time() - start_time
         )
 
+        # ----------------------------------------------------
+        # Response
+        # ----------------------------------------------------
+
         return jsonify(
             {
+                "model": "Food-101 trained DeiT-Tiny",
                 "prediction": {
                     "class_id": predicted_class,
-                    "label": label,
                     "confidence": round(
                         float(confidence),
                         4,
                     ),
+                    "label": label,
                 },
-                "model": "Food-101 trained DeiT-Tiny",
             }
         )
 
@@ -264,6 +378,11 @@ def predict():
             time.time() - start_time
         )
 
+        print(
+            "Prediction error:",
+            str(exc),
+        )
+
         return jsonify(
             {
                 "error": str(exc),
@@ -272,27 +391,7 @@ def predict():
 
 
 # ============================================================
-# ROOT
-# ============================================================
-
-@app.route("/", methods=["GET"])
-def home():
-
-    return jsonify(
-        {
-            "message": "Food-101 Image Classification API",
-            "endpoints": {
-                "health": "/health",
-                "model_info": "/model-info",
-                "prediction": "POST /predict",
-                "metrics": "/metrics",
-            },
-        }
-    )
-
-
-# ============================================================
-# RUN
+# RUN APPLICATION
 # ============================================================
 
 if __name__ == "__main__":
@@ -303,6 +402,14 @@ if __name__ == "__main__":
             8000,
         )
     )
+
+    print("=" * 60)
+    print("FOOD-101 INFERENCE API")
+    print("=" * 60)
+    print("Starting Flask server...")
+    print("Port:", port)
+    print("Model will be loaded on first prediction request.")
+    print("=" * 60)
 
     app.run(
         host="0.0.0.0",
