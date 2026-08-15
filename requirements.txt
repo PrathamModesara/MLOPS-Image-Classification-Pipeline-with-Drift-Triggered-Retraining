@@ -24,3 +24,4 @@ gunicorn
 python-dotenv
 pyyaml
 requests
+accelerate

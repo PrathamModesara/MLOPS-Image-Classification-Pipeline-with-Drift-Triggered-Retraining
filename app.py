@@ -93,6 +93,8 @@ print("\nLoading trained Food-101 model...")
 
 model = AutoModelForImageClassification.from_pretrained(
     MODEL_DIR
+    low_cpu_mem_usage=True,
+    use_safetensors=True
 )
 
 model.to(DEVICE)
