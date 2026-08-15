@@ -42,7 +42,7 @@ BATCH_SIZE = int(
 
 # Final training epochs
 EPOCHS = int(
-    os.getenv("EPOCHS", "10")
+    os.getenv("EPOCHS", "3")
 )
 
 # Best learning rate found by Optuna
