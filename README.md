@@ -1,54 +1,481 @@
-# Food-101 Image Classification MLOps
+# Food-101 Image Classification MLOps — Drift-Triggered Retraining
 
-## Project Overview
+An end-to-end MLOps pipeline for image classification on the Food-101 dataset that
+automatically **detects input drift** in incoming image data and **triggers model
+retraining** through GitHub Actions when drift is detected.
 
-This project implements an MLOps pipeline for image classification using the Food-101 dataset.
+Repository: `PrathamModesara/MLOPS-Image-Classification-Pipeline-with-Drift-Triggered-Retraining`
 
-The objective is to detect input drift and automatically trigger model retraining.
+---
 
-## Technologies
+## Table of Contents
 
-- Python
-- PyTorch
-- Hugging Face Datasets
-- Hugging Face Transformers
-- DeiT-Tiny
-- MLflow
-- Optuna
-- ZenML
-- Prometheus
-- Grafana
-- Docker
-- GitHub Actions
-- Render
+1. [Aim](#aim)
+2. [Problem Statement](#problem-statement)
+3. [Technologies Used](#technologies-used)
+4. [Dataset](#dataset)
+5. [Repository / Folder Structure](#repository--folder-structure)
+6. [Code File Structure — What Each File Does](#code-file-structure--what-each-file-does)
+7. [End-to-End Workflow](#end-to-end-workflow)
+8. [Drift Detection Logic](#drift-detection-logic)
+9. [GitHub Actions Pipeline — Structure & Flow](#github-actions-pipeline--structure--flow)
+10. [Inference API (`app.py`)](#inference-api-apppy)
+11. [Configuration Reference (`src/config.py`)](#configuration-reference-srcconfigpy)
+12. [Project Health Check](#project-health-check)
+13. [How to Run Locally](#how-to-run-locally)
+
+---
+
+## Aim
+
+To build a **production-style MLOps pipeline** for an image classification model that:
+
+- Trains and evaluates a vision transformer model on the Food-101 dataset.
+- Tracks every experiment, hyperparameter, and metric using **MLflow**.
+- Tunes hyperparameters automatically using **Optuna**.
+- Orchestrates the training/evaluation workflow as a reproducible **ZenML** pipeline.
+- Continuously **monitors production/incoming data for distribution (input) drift**.
+- **Automatically triggers retraining** of the model when significant drift is detected — with no manual intervention.
+- Exposes the trained model as a **REST inference API** (Flask) instrumented with **Prometheus** metrics (for **Grafana** dashboards) and deployable to **Render**.
+- Automates the entire drift-detection → retraining loop using **GitHub Actions** (via `repository_dispatch` events) running on a **self-hosted runner**.
+
+## Problem Statement
+
+Machine learning models degrade in production as the real-world data distribution
+shifts away from the distribution the model was trained on — a phenomenon known as
+**data/input drift** (e.g., lighting changes, image quality changes, sensor changes,
+new food presentation styles, etc.). Left unaddressed, this silently erodes model
+accuracy over time.
+
+Most ML deployments still rely on **manual monitoring and manual retraining**, which is:
+
+- Slow to detect degradation.
+- Error-prone and inconsistent.
+- Not scalable across many models/deployments.
+
+This project solves that by implementing an **automated, closed-loop MLOps system**
+that:
+
+1. Continuously compares incoming ("current") image embeddings against a
+   **reference embedding distribution** from the original training data.
+2. Computes a **drift score** (L2 distance between mean embedding vectors).
+3. Flags **drift detected** when the score exceeds a configurable threshold.
+4. **Automatically dispatches a retraining event to GitHub Actions**, which:
+   - Re-runs drift detection for confirmation,
+   - Executes the ZenML retraining pipeline,
+   - Logs the new model/metrics to MLflow,
+   - Verifies the newly trained model artifacts.
+
+This removes the human bottleneck from the "detect drift → retrain → redeploy" loop.
+
+## Technologies Used
+
+| Category | Tools |
+|---|---|
+| Language | Python |
+| Deep Learning | PyTorch, Hugging Face Transformers, `timm` |
+| Model | DeiT-Tiny (`facebook/deit-tiny-patch16-224`) — Vision Transformer |
+| Dataset Handling | Hugging Face `datasets` |
+| Hyperparameter Tuning | Optuna |
+| Experiment Tracking / Model Registry | MLflow |
+| Pipeline Orchestration | ZenML |
+| Monitoring | Prometheus, Grafana |
+| Serving | Flask + Gunicorn |
+| Containerization | Docker |
+| CI/CD & Automation | GitHub Actions (self-hosted runner, `repository_dispatch`) |
+| Deployment Target | Render |
 
 ## Dataset
 
-Food-101 contains 101 food categories.
+- **Source:** Food-101 (`ethz/food101` on Hugging Face Datasets Hub) — 101 food categories.
+- **Development subset (balanced):**
+  - Training: 505 images (5 per class × 101 classes, used for drift *reference* embeddings) / full training subset = 5,050 images (50 per class)
+  - Validation: 101 images (1 per class, used for drift *current* embeddings) / full validation subset = 1,010 images (10 per class)
+  - Classes: 101
+- **Simulated drift set:** `data/drifted_images/` — 101 `.jpg` images (`drifted_0.jpg` … `drifted_100.jpg`) generated by applying brightness, contrast, and Gaussian-blur transformations to validation images (`src/simulate_drift.py`), used to simulate real-world input drift for testing the pipeline end-to-end.
 
-For development, a balanced subset is used:
+---
 
-- Training: 505 images
-- Validation: 101 images
-- Classes: 101
+## Repository / Folder Structure
 
-## Current Pipeline
+```
+MLOPS-Image-Classification-Pipeline-with-Drift-Triggered-Retraining/
+│
+├── .github/
+│   └── workflows/
+│       └── drift_retraining.yml        # GitHub Actions CI/CD workflow (drift → retrain)
+│
+├── .zen/
+│   └── config.yaml                     # ZenML active project/stack configuration
+│
+├── artifacts/
+│   └── reference_embeddings.npy        # Saved reference (baseline) embeddings for drift comparison
+│                                        # (current_embeddings.npy / drift_result.json are also
+│                                        #  generated here at runtime, but git-ignored)
+│
+├── data/
+│   └── drifted_images/                 # 101 simulated "drifted" images (drifted_0.jpg ... drifted_100.jpg)
+│
+├── models/
+│   └── food101_model/                  # Trained DeiT-Tiny model artifacts
+│       ├── config.json                 # Model architecture / label mapping config
+│       ├── model.safetensors           # Trained model weights
+│       └── preprocessor_config.json    # Image processor / feature-extractor config
+│
+├── scripts/
+│   ├── test_food101.py                 # Quick manual test: load & inspect Food-101 dataset
+│   ├── test_model.py                   # Quick manual test: run one prediction with base DeiT-Tiny
+│   └── test_model.pycs                 # (compiled/cache artifact)
+│
+├── src/
+│   ├── __init__.py                     # Marks `src` as a Python package
+│   ├── config.py                       # Central configuration (paths, hyperparameters, thresholds)
+│   ├── data.py                         # Food-101 loading + balanced subset creation
+│   ├── drift.py                        # Core drift detection logic (embeddings + drift score)
+│   ├── evaluate.py                     # Model evaluation (accuracy/precision/recall/F1)
+│   ├── github_dispatch.py              # Sends `repository_dispatch` event to GitHub Actions on drift
+│   ├── mlflow_baseline.py              # Logs an initial/baseline run to MLflow
+│   ├── mlflow_register.py              # Logs & registers the final optimized model in MLflow
+│   ├── mlflow_utils.py                 # Shared MLflow logging helper functions
+│   ├── model.py                        # Model factory (loads DeiT-Tiny with custom classifier head)
+│   ├── optuna_tuning.py                # Optuna hyperparameter search (learning rate, augmentation)
+│   ├── retrain_trigger.py              # Drift-gated retraining orchestrator (drift check → ZenML run)
+│   ├── simulate_drift.py               # Generates the simulated drifted image dataset
+│   ├── train.py                        # Full model training loop (Optuna-optimized)
+│   └── zenml_pipeline.py               # ZenML `@pipeline`/`@step` definitions tying it all together
+│
+├── .gitignore                          # Ignores venvs, data/, models/, mlflow/zenml artifacts, logs, etc.
+├── README.md                           # Project documentation (original)
+├── app.py                              # Flask inference API + Prometheus metrics + health checks
+├── check_project.py                    # Project/environment health-check script
+└── requirements.txt                    # Python dependencies
+```
 
-```text
+**Note on `.gitignore`:** `data/`, `models/`, `mlflow.db`, `mlruns/`, `mlartifacts/`,
+and most `artifacts/*` files are git-ignored (generated at runtime). The
+`models/food101_model/` and `data/drifted_images/` folders shown above are present in
+the actual GitHub tree as committed deliverables/demo artifacts despite the broader
+ignore rules.
+
+---
+
+## Code File Structure — What Each File Does
+
+### Root level
+
+| File | Purpose |
+|---|---|
+| `app.py` | Flask REST API serving the trained Food-101 model. Lazy-loads the model on first `/predict` call (so the server boots fast on Render). Exposes `/`, `/health`, `/model-info`, `/metrics` (Prometheus), and `POST /predict`. |
+| `check_project.py` | Diagnostic script — checks installed libraries, project directories/files, importable `src` modules, model directory contents, MLflow connectivity, ZenML installation, and PyTorch/CUDA availability. Prints a full health report. |
+| `requirements.txt` | Pinned/loose Python dependencies: `torch`, `torchvision` (CPU wheels), `transformers`, `timm`, `datasets`, `mlflow`, `optuna`, `zenml`, OpenTelemetry libs (ZenML dependency), `prometheus-client`, `flask`, `gunicorn`, etc. |
+| `.gitignore` | Excludes virtual envs, caches, secrets (`.env`), `data/`, `models/`, MLflow/ZenML runtime artifacts, logs, and checkpoints. |
+
+### `src/` — core pipeline package
+
+| File | Purpose |
+|---|---|
+| `config.py` | Single source of truth for all constants: dataset name/splits, model name (`facebook/deit-tiny-patch16-224`), image size, batch size, epochs, learning rate & augmentation strength (Optuna-tuned defaults), file paths (`models/`, `artifacts/`), drift threshold (`4.0`), and MLflow tracking URI/experiment name. Most values are overridable via environment variables. |
+| `data.py` | Loads Food-101 via Hugging Face `datasets`, then builds **class-balanced subsets** (50 images/class train, 10 images/class validation) without decoding the whole dataset up front. |
+| `model.py` | Creates the DeiT-Tiny model (`AutoModelForImageClassification`) reconfigured with a 101-class classification head (`ignore_mismatched_sizes=True`), and selects CUDA/CPU device. |
+| `train.py` | Full training loop: loads data, builds train-time augmentation (flip/rotation/color-jitter, strength from Optuna), uses **differential learning rates** (lower LR for backbone, higher for classifier head), **gradient accumulation** (4 steps) + **gradient checkpointing**, tracks best-loss checkpoint, and saves the trained model + processor to `models/food101_model/`. |
+| `evaluate.py` | Loads the trained model, runs it over the validation split, and computes accuracy, precision, recall, and F1 (weighted) plus validation loss. |
+| `optuna_tuning.py` | Runs an Optuna study (`N_TRIALS = 3`, 1 epoch/trial) that searches `learning_rate` (1e-5–1e-3, log-scale) and `augmentation_strength` (0–0.5) to minimize validation loss. Each trial is logged as a **nested MLflow run** under a parent `optuna-parent-run`. |
+| `simulate_drift.py` | Applies brightness boost, contrast boost, and Gaussian blur to validation images to synthesize a "drifted" version of the input distribution, saving 101 `.jpg`s to `data/drifted_images/`. |
+| `drift.py` | **Core drift-detection engine.** Extracts penultimate-layer embeddings (`model.vit(...).last_hidden_state[:, 0, :]`, i.e. the `[CLS]` token) for a reference sample and a current sample, computes drift as the **L2 norm of the difference between mean embedding vectors**, compares it to `DRIFT_THRESHOLD`, and writes the result to `artifacts/drift_result.json`. Supports both a "normal" data check (train vs. validation subsets) and a `--drifted` mode that compares against the simulated drifted images in `data/drifted_images/`. |
+| `retrain_trigger.py` | Reads `artifacts/drift_result.json`; if `drift_detected == True`, starts an MLflow run (`food101-drift-retraining`), logs drift info + training hyperparameters, then invokes the **ZenML pipeline as a subprocess** (`python -m src.zenml_pipeline`), and finally logs the retrained model artifacts back to MLflow. Returns `False` immediately if no drift is present. |
+| `zenml_pipeline.py` | Defines the ZenML pipeline `food101_pipeline` composed of 4 `@step`s: `data_step` (load/inspect dataset), `drift_info_step` (read the drift JSON), `training_step` (calls `train_model()`, depends on data + drift info), `evaluation_step` (calls `evaluate_model()`, depends on training output). |
+| `mlflow_utils.py` | Reusable MLflow helper functions: `setup_mlflow`, `log_retraining_parameters`, `log_training_parameters`, `log_model_artifact`, `log_drift_result`, `log_retrained_model`. |
+| `mlflow_baseline.py` | Logs a one-off **baseline** MLflow run (`food101-improved-baseline`) with fixed illustrative metrics/params and the current model artifacts — used to record an initial reference point in the MLflow experiment. |
+| `mlflow_register.py` | Loads the trained model + processor, starts an MLflow run (`food101-final-optimized-model`), logs the Optuna-optimized hyperparameters and evaluation metrics, and **registers the model** in the MLflow Model Registry under the name `Food101Classifier` using `mlflow.transformers.log_model(...)`. |
+| `github_dispatch.py` | Reads `artifacts/drift_result.json`; if drift was detected, sends a **`repository_dispatch`** POST request (`event_type: drift-alert`) to the GitHub REST API for this repo, using a `GITHUB_TOKEN` from the environment. This is the mechanism that remotely fires the GitHub Actions workflow from outside CI (e.g. a scheduled/local monitoring job). |
+| `__init__.py` | Empty file marking `src/` as an importable Python package. |
+
+### `scripts/` — manual smoke tests
+
+| File | Purpose |
+|---|---|
+| `test_food101.py` | Loads 10 Food-101 samples and prints dataset shape/columns/classes/sample — a quick sanity check that the dataset loads correctly. |
+| `test_model.py` | Loads 1 Food-101 sample and runs a forward pass through the base (untrained) DeiT-Tiny model to confirm the model/processor pipeline works end-to-end. |
+
+### `models/food101_model/`
+
+Contains the exported Hugging Face model artifacts used both for training checkpoints and inference:
+- `config.json` — ViT/DeiT architecture config, 101-class `id2label`/`label2id` maps, hidden size 192, 12 layers, 3 attention heads, patch size 16, image size 224.
+- `model.safetensors` — the trained weights.
+- `preprocessor_config.json` — the matching image processor/feature extractor config.
+
+### `.zen/config.yaml`
+
+ZenML's local project configuration file, recording the `active_project_id` and `active_stack_id` used to run the ZenML pipeline against the configured ZenML stack.
+
+---
+
+## End-to-End Workflow
+
+The project's overall lifecycle (as summarized in the original README) is:
+
+```
 Food-101
    ↓
-Data Preparation
+Data Preparation        (src/data.py)
    ↓
-DeiT-Tiny Training
+DeiT-Tiny Training       (src/train.py, src/model.py)
    ↓
-Evaluation
+Evaluation                (src/evaluate.py)
    ↓
-Optuna Hyperparameter Tuning
+Optuna Hyperparameter Tuning   (src/optuna_tuning.py)
    ↓
-MLflow Experiment Tracking
+MLflow Experiment Tracking     (src/mlflow_baseline.py, src/mlflow_register.py, src/mlflow_utils.py)
    ↓
-ZenML Pipeline
+ZenML Pipeline             (src/zenml_pipeline.py)
    ↓
-Drift Detection
+Drift Detection            (src/drift.py, src/simulate_drift.py)
    ↓
-Retraining
+Retraining                 (src/retrain_trigger.py → src/zenml_pipeline.py, triggered via
+                             src/github_dispatch.py → .github/workflows/drift_retraining.yml)
+```
+
+**Detailed step-by-step flow:**
+
+1. **Data preparation** — `src/data.py` loads Food-101 and builds a class-balanced train/validation subset.
+2. **Baseline training** — `src/train.py` fine-tunes DeiT-Tiny with differential learning rates, augmentation, gradient accumulation, and checkpointing; saves the model to `models/food101_model/`.
+3. **Evaluation** — `src/evaluate.py` scores the trained model (accuracy, precision, recall, F1).
+4. **Hyperparameter tuning** — `src/optuna_tuning.py` searches for the best `learning_rate` / `augmentation_strength`, logging each trial to MLflow (nested runs).
+5. **Experiment tracking & registry** — `src/mlflow_baseline.py` logs a baseline run; `src/mlflow_register.py` logs and registers the final Optuna-optimized model as `Food101Classifier` in the MLflow Model Registry.
+6. **Pipeline orchestration** — `src/zenml_pipeline.py` wires `data_step → drift_info_step → training_step → evaluation_step` into one reproducible ZenML pipeline (`food101_pipeline`).
+7. **Drift simulation (for testing)** — `src/simulate_drift.py` creates 101 visually "drifted" images (`data/drifted_images/`) by boosting brightness/contrast and adding blur.
+8. **Drift detection** — `src/drift.py` embeds a reference sample and a current (or simulated-drifted) sample using the model's `[CLS]` token, computes the L2 distance between mean embeddings, compares against `DRIFT_THRESHOLD = 4.0`, and writes `artifacts/drift_result.json`.
+9. **Drift alert dispatch** — `src/github_dispatch.py` reads the drift result; if drift was detected, it fires a `repository_dispatch` (`drift-alert`) event to GitHub, which triggers the CI/CD workflow externally (e.g., from a monitoring cron job outside GitHub Actions).
+10. **Automated retraining (CI/CD)** — the GitHub Actions workflow (`.github/workflows/drift_retraining.yml`) runs on a self-hosted runner: it re-verifies drift, and if drift is confirmed, invokes `src/retrain_trigger.py`, which re-runs `src/zenml_pipeline.py` (retraining + evaluation) and logs everything back to MLflow.
+11. **Serving** — `app.py` (Flask + Gunicorn, containerizable with Docker, deployable on Render) loads the (re)trained model on first request and serves predictions via `POST /predict`, exposing Prometheus metrics at `/metrics` for Grafana dashboards.
+
+---
+
+## Drift Detection Logic
+
+Implemented in `src/drift.py`:
+
+1. **Embeddings** are extracted from the backbone's `[CLS]` token
+   (`model.vit(**inputs).last_hidden_state[:, 0, :]`) for a batch of images — this
+   gives a compact vector representation of each image's visual distribution.
+2. **Reference embeddings**: a balanced sample of **5 images/class** from the
+   *training* split (505 images total) — saved once to `artifacts/reference_embeddings.npy`
+   and reused across runs.
+3. **Current embeddings**: either
+   - a balanced sample of **1 image/class** from the *validation* split (101 images) for the "normal" check, or
+   - the 101 **simulated drifted images** in `data/drifted_images/` for the `--drifted` check.
+4. **Drift score** = Euclidean (L2) norm of the difference between the mean reference
+   embedding vector and the mean current embedding vector.
+5. **Drift threshold** = `4.0` (configurable via `DRIFT_THRESHOLD` env var in `src/config.py`).
+6. **Result** — `drift_detected = drift_score > DRIFT_THRESHOLD`, saved as JSON to
+   `artifacts/drift_result.json`:
+   ```json
+   {
+     "dataset_type": "simulated_drift",
+     "drift_score": 0.0,
+     "threshold": 4.0,
+     "drift_detected": false
+   }
+   ```
+
+---
+
+## GitHub Actions Pipeline — Structure & Flow
+
+**File:** `.github/workflows/drift_retraining.yml`
+**Workflow name:** `Food101 Drift Retraining`
+**Runner:** `self-hosted` (a local/WSL machine with the project's Python virtual
+environment and a running MLflow server at `http://127.0.0.1:5000` — not a
+GitHub-hosted runner).
+
+### Triggers (`on:`)
+
+| Trigger | Description |
+|---|---|
+| `workflow_dispatch` | Manual trigger from the GitHub Actions UI. |
+| `repository_dispatch` (`types: drift-alert`) | Programmatic trigger — fired by `src/github_dispatch.py` when drift is detected outside of CI (e.g., a scheduled monitoring job), via a POST to the GitHub REST API `.../dispatches` endpoint with `event_type: drift-alert`. |
+
+### Job: `drift-retraining` (runs on `self-hosted`)
+
+The job executes the following steps **in order**:
+
+1. **Checkout repository** — `actions/checkout@v4`.
+2. **Setup existing Python environment** — activates the pre-existing `.venv` inside
+   `~/food101_drift_mlops`, prints the Python version/path, verifies `torch`,
+   `transformers`, `mlflow`, `zenml` import successfully, and prints the configured
+   `EPOCHS` from `src/config.py`. *(Note: the environment is not created fresh by the
+   workflow — it assumes it already exists on the self-hosted machine.)*
+3. **Display workflow information** — prints workflow name, triggering event, branch, commit SHA, runner name/OS.
+4. **Verify MLflow server** — `curl --fail http://127.0.0.1:5000` to confirm the local MLflow tracking server is reachable.
+5. **Verify model files** — checks `models/food101_model/{model.safetensors, config.json, preprocessor_config.json}` exist.
+6. **Verify drift images** — confirms exactly 101 `.jpg` files exist in `data/drifted_images/`.
+7. **Verify drift reference embeddings** — confirms `artifacts/reference_embeddings.npy` exists, loads it with NumPy, and validates it isn't empty.
+8. **Run simulated drift detection** — executes `python -m src.drift --drifted`, reusing the existing reference embeddings and comparing them against the simulated drifted images.
+9. **Check drift result** *(step id: `drift_check`)* — reads `artifacts/drift_result.json` and writes `drift_detected`, `drift_score`, `drift_threshold` to `$GITHUB_OUTPUT` so later steps can branch on them.
+10. **Drift detected** *(conditional: `drift_detected == 'true'`)* — logs the drift score/threshold and announces that retraining is starting.
+11. **Trigger retraining** *(conditional)* — activates the venv and runs `python -m src.retrain_trigger`, which internally re-checks the drift file and, since drift is confirmed, runs the full ZenML retraining pipeline (`src.zenml_pipeline`) as a subprocess and logs results to MLflow.
+12. **Verify retrained model** *(conditional)* — re-checks that the model files exist and lists them.
+13. **Verify MLflow retraining run** *(conditional)* — queries the MLflow client for the `food101-drift-retraining` experiment and prints the latest run's ID, status, epochs, and drift score.
+14. **Retraining completed** *(conditional)* — prints a summary confirming drift-triggered retraining, ZenML execution, and MLflow logging all completed.
+15. **No drift — skip retraining** *(conditional: `drift_detected != 'true'`)* — prints that retraining is skipped and the existing model is unchanged.
+16. **Pipeline summary** *(`if: always()`)* — always runs at the end, printing the final `drift_detected`, `drift_score`, and `drift_threshold` values regardless of outcome.
+
+### Flow diagram
+
+```
+                 ┌───────────────────────────┐
+                 │ workflow_dispatch (manual) │
+                 │  OR                        │
+                 │ repository_dispatch        │
+                 │  (event: drift-alert, sent │
+                 │   by src/github_dispatch.py)│
+                 └──────────────┬────────────┘
+                                │
+                                ▼
+                 Checkout repo → Activate existing .venv
+                                │
+                                ▼
+                 Verify MLflow server, model files,
+                 drift images, reference embeddings
+                                │
+                                ▼
+                 Run drift detection (--drifted mode)
+                                │
+                                ▼
+                 Read artifacts/drift_result.json
+                    → set step outputs
+                                │
+                 ┌──────────────┴───────────────┐
+                 ▼                               ▼
+         drift_detected = true           drift_detected = false
+                 │                               │
+                 ▼                               ▼
+   Trigger src.retrain_trigger          Skip retraining —
+   → runs src.zenml_pipeline            existing model unchanged
+   → logs to MLflow
+                 │
+                 ▼
+   Verify retrained model files
+   Verify MLflow retraining run
+                 │
+                 ▼
+        Pipeline summary (always runs)
+```
+
+---
+
+## Inference API (`app.py`)
+
+A Flask application exposing:
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/` | GET | Service info / list of available endpoints. |
+| `/health` | GET | Health check — reports whether the model is loaded and which device is used. |
+| `/model-info` | GET | Reports model name, number of classes, device, and model directory. |
+| `/predict` | POST | Accepts an uploaded image (`multipart/form-data`, field `image`), runs inference, and returns the predicted class ID, label, and confidence. |
+| `/metrics` | GET | Prometheus-formatted metrics (`generate_latest()`). |
+
+**Prometheus metrics exposed:**
+- `food101_prediction_requests_total` (Counter)
+- `food101_prediction_success_total` (Counter)
+- `food101_prediction_errors_total` (Counter)
+- `food101_prediction_confidence` (Gauge)
+- `food101_prediction_class_id` (Gauge)
+- `food101_prediction_latency_seconds` (Histogram)
+
+The model is **lazily loaded** on the first `/predict` call (not at import time) so
+that the server binds to its port quickly — important for platforms like Render that
+health-check the port shortly after startup. CPU thread count is capped
+(`torch.set_num_threads(1)`) to fit within free-tier CPU limits.
+
+---
+
+## Configuration Reference (`src/config.py`)
+
+| Setting | Default | Env Var Override |
+|---|---|---|
+| Dataset name | `ethz/food101` | — |
+| Train split | `train[:5000]` | `FOOD101_SPLIT` |
+| Validation split | `validation[:1000]` | `FOOD101_VALIDATION_SPLIT` |
+| Number of classes | `101` | — |
+| Model name | `facebook/deit-tiny-patch16-224` | — |
+| Image size | `224` | — |
+| Batch size | `2` | `BATCH_SIZE` |
+| Epochs | `3` | `EPOCHS` |
+| Learning rate | `0.000088567` (Optuna-tuned) | `LEARNING_RATE` |
+| Augmentation strength | `0.069617` (Optuna-tuned) | `AUGMENTATION_STRENGTH` |
+| Drift threshold | `4.0` | `DRIFT_THRESHOLD` |
+| Model directory | `models/food101_model` | — |
+| Artifacts directory | `artifacts` | — |
+| MLflow tracking URI | `http://127.0.0.1:5000` | `MLFLOW_TRACKING_URI` |
+| MLflow experiment name | `Food101-Drift-Retraining-v2` | — |
+
+---
+
+## Project Health Check
+
+`check_project.py` is a standalone diagnostic script that verifies, in order:
+
+1. Required libraries are importable (`torch`, `transformers`, `datasets`, `PIL`, `numpy`, `pandas`, `sklearn`, `mlflow`, `optuna`, `zenml`, `sqlalchemy`, `sqlalchemy_utils`, `sqlmodel`, `pydantic`).
+2. Expected project directories exist (`src`, `models`, `data`, `artifacts`, `mlartifacts`, `monitoring`, `pipelines`, `prometheus`, `grafana`, `api`, `tests`, `.github`).
+3. Key project files exist (`requirements.txt`, `mlflow.db`, and all `src/*.py` core modules).
+4. All `src.*` modules import cleanly.
+5. The trained model directory exists and lists its contents.
+6. MLflow connectivity — connects to the tracking URI and lists experiments.
+7. ZenML is installed and reports its version.
+8. PyTorch is installed and reports CUDA availability.
+
+Run it with:
+```bash
+python check_project.py
+```
+
+---
+
+## How to Run Locally
+
+```bash
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Sanity-check the environment
+python check_project.py
+
+# 3. Prepare / inspect data
+python -m src.data
+
+# 4. (Optional) Hyperparameter tuning
+python -m src.optuna_tuning
+
+# 5. Train the model
+python -m src.train
+
+# 6. Evaluate the model
+python -m src.evaluate
+
+# 7. Log baseline / register model to MLflow
+python -m src.mlflow_baseline
+python -m src.mlflow_register
+
+# 8. Simulate drifted data
+python -m src.simulate_drift
+
+# 9. Run drift detection
+python -m src.drift              # normal check (train vs validation)
+python -m src.drift --drifted    # check against simulated drifted images
+
+# 10. Trigger retraining if drift was detected
+python -m src.retrain_trigger
+
+# 11. Run the ZenML pipeline directly
+python -m src.zenml_pipeline
+
+# 12. Send a repository_dispatch alert to GitHub Actions (requires GITHUB_TOKEN)
+python -m src.github_dispatch
+
+# 13. Serve the model
+python app.py
+```
+
+MLflow UI (when the tracking server is running locally): `http://127.0.0.1:5000`
